@@ -6,7 +6,7 @@ Unit tests for the Wikipedia proxy server
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 import requests
-from wikipedia_proxy import app, rewrite_urls
+from src.proxy import app, rewrite_urls
 
 
 @pytest.fixture
@@ -79,7 +79,7 @@ class TestProxyRoutes:
         assert response.status_code == 302
         assert '/wiki/Main_Page' in response.location
 
-    @patch('wikipedia_proxy.requests.get')
+    @patch('src.proxy.requests.get')
     def test_proxy_wiki_page(self, mock_get, client):
         """Test proxying a Wikipedia page"""
         # Mock Wikipedia response
@@ -97,7 +97,7 @@ class TestProxyRoutes:
         call_args = mock_get.call_args[0][0]
         assert 'wikipedia.org/wiki/Test_Page' in call_args
 
-    @patch('wikipedia_proxy.requests.get')
+    @patch('src.proxy.requests.get')
     def test_proxy_with_query_parameters(self, mock_get, client):
         """Test that query parameters are forwarded"""
         mock_response = Mock()
@@ -113,7 +113,7 @@ class TestProxyRoutes:
         assert 'search=Python' in call_args
         assert 'title=Special:Search' in call_args
 
-    @patch('wikipedia_proxy.requests.get')
+    @patch('src.proxy.requests.get')
     def test_proxy_wikimedia_resources(self, mock_get, client):
         """Test proxying Wikimedia resources"""
         mock_response = Mock()
@@ -129,7 +129,7 @@ class TestProxyRoutes:
         call_args = mock_get.call_args[0][0]
         assert 'upload.wikimedia.org/wikipedia/commons/test.jpg' in call_args
 
-    @patch('wikipedia_proxy.requests.get')
+    @patch('src.proxy.requests.get')
     def test_proxy_forwards_headers(self, mock_get, client):
         """Test that appropriate headers are forwarded when present"""
         # Use MagicMock with proper dict-like behavior
@@ -167,7 +167,7 @@ class TestProxyRoutes:
         # Check CSP header is always set
         assert 'Content-Security-Policy' in response.headers
 
-    @patch('wikipedia_proxy.requests.get')
+    @patch('src.proxy.requests.get')
     def test_user_agent_forwarding(self, mock_get, client):
         """Test that user agent is properly set"""
         mock_response = Mock()
@@ -191,7 +191,7 @@ class TestProxyRoutes:
 class TestErrorHandling:
     """Test error handling"""
 
-    @patch('wikipedia_proxy.requests.get')
+    @patch('src.proxy.requests.get')
     def test_handle_request_exception(self, mock_get, client):
         """Test handling of request exceptions"""
         mock_get.side_effect = requests.RequestException("Connection failed")
@@ -202,7 +202,19 @@ class TestErrorHandling:
         assert b'Error fetching from' in response.data
         assert b'Connection failed' in response.data
 
-    @patch('wikipedia_proxy.requests.get')
+    def test_404_error_handler(self, client):
+        """Test the custom 404 error handler"""
+        from werkzeug.exceptions import NotFound
+        from src.proxy import app
+
+        with app.test_request_context():
+            # Manually trigger the 404 handler
+            response = app.error_handler_spec[None][404][NotFound]
+            result = response(NotFound())
+            assert "Page not found" in result[0]
+            assert result[1] == 404
+
+    @patch('src.proxy.requests.get')
     def test_handle_wikipedia_404(self, mock_get, client):
         """Test handling of Wikipedia 404 responses"""
         mock_response = Mock()
@@ -215,7 +227,7 @@ class TestErrorHandling:
 
         assert response.status_code == 404
 
-    @patch('wikipedia_proxy.requests.get')
+    @patch('src.proxy.requests.get')
     def test_non_existent_path_returns_wikipedia_404(self, mock_get, client):
         """Test that non-existent paths get Wikipedia's 404 page"""
         # Mock Wikipedia's 404 response
@@ -235,7 +247,7 @@ class TestErrorHandling:
 class TestContentTypes:
     """Test handling of different content types"""
 
-    @patch('wikipedia_proxy.requests.get')
+    @patch('src.proxy.requests.get')
     def test_handle_json_content(self, mock_get, client):
         """Test handling JSON API responses"""
         mock_response = Mock()
@@ -250,7 +262,7 @@ class TestContentTypes:
         assert response.content_type == 'application/json'
         assert response.data == b'{"key": "value"}'
 
-    @patch('wikipedia_proxy.requests.get')
+    @patch('src.proxy.requests.get')
     def test_handle_css_content(self, mock_get, client):
         """Test handling CSS files"""
         mock_response = Mock()
@@ -270,7 +282,7 @@ class TestContentTypes:
 class TestURLRewritingIntegration:
     """Test URL rewriting in integration with proxy"""
 
-    @patch('wikipedia_proxy.requests.get')
+    @patch('src.proxy.requests.get')
     def test_rewritten_urls_in_proxied_content(self, mock_get, client):
         """Test that URLs in proxied HTML are correctly rewritten"""
         html_with_links = '''

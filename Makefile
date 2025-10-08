@@ -2,11 +2,11 @@
 
 # Build the container image
 build:
-	podman build -t wikipedia-proxy:latest .
+	podman build -f docker/Dockerfile -t wikipedia-proxy:latest .
 
 # Build test container image
 build-test:
-	podman build -f Dockerfile.dev -t wikipedia-proxy-test:latest .
+	podman build -f docker/Dockerfile.dev -t wikipedia-proxy-test:latest .
 
 # Run the container
 run:
@@ -19,17 +19,17 @@ run:
 
 # Run with docker-compose (using podman-compose)
 compose-up:
-	podman-compose up -d
+	podman-compose -f docker/docker-compose.yml up -d
 
 # Stop and remove with docker-compose
 compose-down:
-	podman-compose down
+	podman-compose -f docker/docker-compose.yml down
 
 # Development mode - mounts local code
 dev:
 	podman run -it --rm \
 		-p 8000:8000 \
-		-v ./wikipedia_proxy.py:/app/wikipedia_proxy.py:z \
+		-v ./src:/app/src:z \
 		-e ANTHROPIC_API_KEY="$${ANTHROPIC_API_KEY:-}" \
 		-e ENABLE_LLM_REWRITE="$${ENABLE_LLM_REWRITE:-false}" \
 		-e CLAUDE_MODEL="$${CLAUDE_MODEL:-claude-3-haiku-20240307}" \
@@ -67,37 +67,45 @@ test-proxy:
 
 # Run unit tests in container
 test: build-test
-	podman run --rm -v ./wikipedia_proxy.py:/app/wikipedia_proxy.py:z \
-		-v ./test_wikipedia_proxy.py:/app/test_wikipedia_proxy.py:z \
+	podman run --rm \
+		-v ./src:/app/src:z \
+		-v ./tests:/app/tests:z \
+		-v ./config:/app/config:z \
 		wikipedia-proxy-test:latest pytest -v
 
 # Run tests with coverage in container
 test-cov: build-test
-	podman run --rm -v ./wikipedia_proxy.py:/app/wikipedia_proxy.py:z \
-		-v ./test_wikipedia_proxy.py:/app/test_wikipedia_proxy.py:z \
+	podman run --rm \
+		-v ./src:/app/src:z \
+		-v ./tests:/app/tests:z \
+		-v ./config:/app/config:z \
 		-v ./htmlcov:/app/htmlcov:z \
 		wikipedia-proxy-test:latest \
-		pytest --cov=wikipedia_proxy --cov-report=term-missing --cov-report=html
+		pytest --cov=src.proxy --cov-report=term-missing --cov-report=html
 
 # Run tests in verbose mode in container
 test-verbose: build-test
-	podman run --rm -v ./wikipedia_proxy.py:/app/wikipedia_proxy.py:z \
-		-v ./test_wikipedia_proxy.py:/app/test_wikipedia_proxy.py:z \
+	podman run --rm \
+		-v ./src:/app/src:z \
+		-v ./tests:/app/tests:z \
+		-v ./config:/app/config:z \
 		wikipedia-proxy-test:latest pytest -vv
 
 # Format code in container
 format: build-test
-	podman run --rm -v ./wikipedia_proxy.py:/app/wikipedia_proxy.py:z \
-		-v ./test_wikipedia_proxy.py:/app/test_wikipedia_proxy.py:z \
+	podman run --rm \
+		-v ./src:/app/src:z \
+		-v ./tests:/app/tests:z \
 		wikipedia-proxy-test:latest \
-		black wikipedia_proxy.py test_wikipedia_proxy.py
+		black src tests
 
 # Lint code in container
 lint: build-test
-	podman run --rm -v ./wikipedia_proxy.py:/app/wikipedia_proxy.py:z \
-		-v ./test_wikipedia_proxy.py:/app/test_wikipedia_proxy.py:z \
+	podman run --rm \
+		-v ./src:/app/src:z \
+		-v ./tests:/app/tests:z \
 		wikipedia-proxy-test:latest \
-		flake8 wikipedia_proxy.py test_wikipedia_proxy.py --max-line-length=100 --ignore=E501
+		flake8 src tests --max-line-length=100 --ignore=E501
 
 # Run all quality checks (tests, format check, lint)
 check: test lint
@@ -105,12 +113,16 @@ check: test lint
 
 # Quick test without rebuilding image (assumes test image exists)
 test-quick:
-	podman run --rm -v ./wikipedia_proxy.py:/app/wikipedia_proxy.py:z \
-		-v ./test_wikipedia_proxy.py:/app/test_wikipedia_proxy.py:z \
+	podman run --rm \
+		-v ./src:/app/src:z \
+		-v ./tests:/app/tests:z \
+		-v ./config:/app/config:z \
 		wikipedia-proxy-test:latest pytest -v
 
 # Interactive shell in test container for debugging
 test-shell: build-test
-	podman run -it --rm -v ./wikipedia_proxy.py:/app/wikipedia_proxy.py:z \
-		-v ./test_wikipedia_proxy.py:/app/test_wikipedia_proxy.py:z \
+	podman run -it --rm \
+		-v ./src:/app/src:z \
+		-v ./tests:/app/tests:z \
+		-v ./config:/app/config:z \
 		wikipedia-proxy-test:latest /bin/bash

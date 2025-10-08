@@ -1,5 +1,5 @@
 [run]
-source = wikipedia_proxy
+source = src.proxy
 omit =
     */tests/*
     */test_*.py

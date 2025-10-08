@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install development dependencies
+COPY requirements/ ./requirements/
+RUN pip install --no-cache-dir -r requirements/dev.txt
+
+# Copy application, tests, and config
+COPY src/ ./src/
+COPY tests/ ./tests/
+COPY config/pytest.ini config/.coveragerc ./
+
+# Set Python path
+ENV PYTHONPATH=/app
+
+# Expose port
+EXPOSE 8000
+
+# Default to running tests, but can be overridden
+CMD ["pytest"]

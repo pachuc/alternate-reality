@@ -2,7 +2,9 @@ version: '3.8'
 
 services:
   wikipedia-proxy:
-    build: .
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     container_name: wikipedia_proxy
     ports:
       - "8000:8000"
@@ -17,7 +19,7 @@ services:
       - proxy_network
     # For development, uncomment to mount code
     # volumes:
-    #   - ./wikipedia_proxy.py:/app/wikipedia_proxy.py
+    #   - ../src:/app/src
 
 networks:
   proxy_network:

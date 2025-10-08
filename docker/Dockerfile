@@ -4,14 +4,17 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install dependencies
-COPY requirements.txt .
+COPY requirements/base.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
-COPY wikipedia_proxy.py .
+COPY src/ ./src/
+
+# Set Python path
+ENV PYTHONPATH=/app
 
 # Expose port
 EXPOSE 8000
 
 # Run the application
-CMD ["python", "wikipedia_proxy.py"]
+CMD ["python", "-m", "src.proxy"]

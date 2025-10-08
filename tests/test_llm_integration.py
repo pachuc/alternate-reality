@@ -12,6 +12,12 @@ from anthropic import Anthropic
 # Test both with and without API key
 TEST_API_KEY = os.getenv('ANTHROPIC_API_KEY', 'test-api-key-123')
 
+def clear_proxy_modules():
+    """Clear all proxy modules from sys.modules"""
+    modules_to_remove = [k for k in list(sys.modules.keys()) if k.startswith('src.')]
+    for module in modules_to_remove:
+        del sys.modules[module]
+
 
 class TestAnthropicClientInitialization:
     """Test Anthropic client initialization"""
@@ -20,42 +26,41 @@ class TestAnthropicClientInitialization:
         """Test that client doesn't initialize without API key"""
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': '', 'ENABLE_LLM_REWRITE': 'false'}):
             # Need to reload module to pick up env changes
-            if 'wikipedia_proxy' in sys.modules:
-                del sys.modules['wikipedia_proxy']
-            import wikipedia_proxy
-            assert wikipedia_proxy.anthropic_client is None
-            assert wikipedia_proxy.ENABLE_LLM_REWRITE is False
+            clear_proxy_modules()
+            import src.proxy as proxy
+            assert proxy.anthropic_client is None
+            assert proxy.ENABLE_LLM_REWRITE is False
 
     def test_client_initialization_with_api_key_disabled(self):
         """Test that client doesn't initialize when feature is disabled"""
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': TEST_API_KEY, 'ENABLE_LLM_REWRITE': 'false'}):
-            if 'wikipedia_proxy' in sys.modules:
-                del sys.modules['wikipedia_proxy']
-            import wikipedia_proxy
-            assert wikipedia_proxy.anthropic_client is None
-            assert wikipedia_proxy.ENABLE_LLM_REWRITE is False
+            clear_proxy_modules()
+            import src.proxy as proxy
+            assert proxy.anthropic_client is None
+            assert proxy.ENABLE_LLM_REWRITE is False
 
     def test_client_initialization_with_api_key_enabled(self):
         """Test that client initializes with API key and enabled flag"""
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': TEST_API_KEY, 'ENABLE_LLM_REWRITE': 'true'}):
-            if 'wikipedia_proxy' in sys.modules:
-                del sys.modules['wikipedia_proxy']
-            import wikipedia_proxy
-            # Client should be initialized
-            assert wikipedia_proxy.ENABLE_LLM_REWRITE is True
-            # If we have a real API key, client should be initialized
-            if TEST_API_KEY and TEST_API_KEY != 'test-api-key-123':
-                assert wikipedia_proxy.anthropic_client is not None
-                assert isinstance(wikipedia_proxy.anthropic_client, Anthropic)
+            clear_proxy_modules()
+            # Mock Anthropic to prevent initialization errors with test key
+            with patch('src.proxy.Anthropic') as MockAnthropic:
+                mock_client = Mock()
+                MockAnthropic.return_value = mock_client
+
+                import src.proxy as proxy
+                # Client should be initialized
+                assert proxy.ENABLE_LLM_REWRITE is True
+                # Client should be initialized (mocked)
+                assert proxy.anthropic_client is not None
 
     def test_client_initialization_no_key_but_enabled(self):
         """Test warning when enabled but no API key"""
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': '', 'ENABLE_LLM_REWRITE': 'true'}):
-            if 'wikipedia_proxy' in sys.modules:
-                del sys.modules['wikipedia_proxy']
-            import wikipedia_proxy
-            assert wikipedia_proxy.anthropic_client is None
-            assert wikipedia_proxy.ENABLE_LLM_REWRITE is False  # Should be disabled
+            clear_proxy_modules()
+            import src.proxy as proxy
+            assert proxy.anthropic_client is None
+            assert proxy.ENABLE_LLM_REWRITE is False  # Should be disabled
 
     def test_environment_variable_parsing(self):
         """Test parsing of environment variables"""
@@ -65,11 +70,15 @@ class TestAnthropicClientInitialization:
             'CLAUDE_MODEL': 'claude-3-opus-20240229',
             'MAX_REWRITE_TOKENS': '2000'
         }):
-            if 'wikipedia_proxy' in sys.modules:
-                del sys.modules['wikipedia_proxy']
-            import wikipedia_proxy
-            assert wikipedia_proxy.CLAUDE_MODEL == 'claude-3-opus-20240229'
-            assert wikipedia_proxy.MAX_REWRITE_TOKENS == 2000
+            clear_proxy_modules()
+            # Mock Anthropic to prevent initialization errors
+            with patch('src.proxy.Anthropic') as MockAnthropic:
+                MockAnthropic.return_value = Mock()
+
+                import src.proxy as proxy
+                assert proxy.CLAUDE_MODEL == 'claude-3-opus-20240229'
+                assert proxy.MAX_REWRITE_TOKENS == 2000
+
 
 
 
@@ -79,15 +88,14 @@ class TestLLMRewriteFunction:
     def setup_method(self):
         """Setup for each test"""
         # Import fresh module for each test
-        if 'wikipedia_proxy' in sys.modules:
-            del sys.modules['wikipedia_proxy']
+        clear_proxy_modules()
 
     def test_rewrite_non_html_content(self):
         """Test that non-HTML content is not rewritten"""
-        import wikipedia_proxy
+        import src.proxy as proxy
 
         json_content = b'{"test": "data"}'
-        result = wikipedia_proxy.rewrite_content_with_llm(
+        result = proxy.rewrite_content_with_llm(
             json_content, 'application/json', '/api/test'
         )
         assert result == json_content
@@ -95,12 +103,11 @@ class TestLLMRewriteFunction:
     def test_rewrite_disabled(self):
         """Test that content is not rewritten when disabled"""
         with patch.dict(os.environ, {'ENABLE_LLM_REWRITE': 'false'}):
-            if 'wikipedia_proxy' in sys.modules:
-                del sys.modules['wikipedia_proxy']
-            import wikipedia_proxy
+            clear_proxy_modules()
+            import src.proxy as proxy
 
             html_content = b'<html><body>Test content</body></html>'
-            result = wikipedia_proxy.rewrite_content_with_llm(
+            result = proxy.rewrite_content_with_llm(
                 html_content, 'text/html', '/wiki/Test'
             )
             assert result == html_content
@@ -108,12 +115,11 @@ class TestLLMRewriteFunction:
     def test_rewrite_enabled_no_client(self):
         """Test that content is not rewritten when client is None"""
         with patch.dict(os.environ, {'ENABLE_LLM_REWRITE': 'true', 'ANTHROPIC_API_KEY': ''}):
-            if 'wikipedia_proxy' in sys.modules:
-                del sys.modules['wikipedia_proxy']
-            import wikipedia_proxy
+            clear_proxy_modules()
+            import src.proxy as proxy
 
             html_content = b'<html><body>Test content</body></html>'
-            result = wikipedia_proxy.rewrite_content_with_llm(
+            result = proxy.rewrite_content_with_llm(
                 html_content, 'text/html', '/wiki/Test'
             )
             assert result == html_content
@@ -121,16 +127,16 @@ class TestLLMRewriteFunction:
     def test_rewrite_placeholder_insertion(self):
         """Test that placeholder is inserted when LLM is enabled"""
         with patch.dict(os.environ, {'ENABLE_LLM_REWRITE': 'true', 'ANTHROPIC_API_KEY': TEST_API_KEY}):
-            if 'wikipedia_proxy' in sys.modules:
-                del sys.modules['wikipedia_proxy']
-            import wikipedia_proxy
+            clear_proxy_modules()
+            # Import the proxy module directly
+            import src.proxy as proxy_module
 
-            # Mock the client for this test
-            wikipedia_proxy.ENABLE_LLM_REWRITE = True
-            wikipedia_proxy.anthropic_client = Mock()
+            # Mock the module variables directly
+            proxy_module.ENABLE_LLM_REWRITE = True
+            proxy_module.anthropic_client = Mock()
 
             html_content = b'<html><body>Test content</body></html>'
-            result = wikipedia_proxy.rewrite_content_with_llm(
+            result = proxy_module.rewrite_content_with_llm(
                 html_content, 'text/html', '/wiki/Test_Page'
             )
 
@@ -141,15 +147,14 @@ class TestLLMRewriteFunction:
     def test_rewrite_no_body_tag(self):
         """Test handling of HTML without body tag"""
         with patch.dict(os.environ, {'ENABLE_LLM_REWRITE': 'true', 'ANTHROPIC_API_KEY': TEST_API_KEY}):
-            if 'wikipedia_proxy' in sys.modules:
-                del sys.modules['wikipedia_proxy']
-            import wikipedia_proxy
+            clear_proxy_modules()
+            import src.proxy as proxy_module
 
-            wikipedia_proxy.ENABLE_LLM_REWRITE = True
-            wikipedia_proxy.anthropic_client = Mock()
+            proxy_module.ENABLE_LLM_REWRITE = True
+            proxy_module.anthropic_client = Mock()
 
             html_content = b'<html>No body tag here</html>'
-            result = wikipedia_proxy.rewrite_content_with_llm(
+            result = proxy_module.rewrite_content_with_llm(
                 html_content, 'text/html', '/wiki/Test'
             )
 
@@ -159,18 +164,17 @@ class TestLLMRewriteFunction:
     def test_rewrite_exception_handling(self):
         """Test that exceptions are caught and original content returned"""
         with patch.dict(os.environ, {'ENABLE_LLM_REWRITE': 'true', 'ANTHROPIC_API_KEY': TEST_API_KEY}):
-            if 'wikipedia_proxy' in sys.modules:
-                del sys.modules['wikipedia_proxy']
-            import wikipedia_proxy
+            clear_proxy_modules()
+            import src.proxy as proxy_module
 
-            wikipedia_proxy.ENABLE_LLM_REWRITE = True
-            wikipedia_proxy.anthropic_client = Mock()
+            proxy_module.ENABLE_LLM_REWRITE = True
+            proxy_module.anthropic_client = Mock()
 
             # Content that will cause decode error
             invalid_content = b'\x80\x81\x82'
 
-            with patch('wikipedia_proxy.print') as mock_print:
-                result = wikipedia_proxy.rewrite_content_with_llm(
+            with patch('builtins.print') as mock_print:
+                result = proxy_module.rewrite_content_with_llm(
                     invalid_content, 'text/html', '/wiki/Test'
                 )
 
@@ -184,22 +188,17 @@ class TestLLMRewriteFunction:
 class TestIntegrationWithProxy:
     """Test LLM integration within the proxy flow"""
 
-    @patch('wikipedia_proxy.requests.get')
+    @patch('src.proxy.requests.get')
     def test_proxy_with_llm_enabled(self, mock_get):
         """Test that proxy calls LLM rewrite when enabled"""
         with patch.dict(os.environ, {'ENABLE_LLM_REWRITE': 'true', 'ANTHROPIC_API_KEY': TEST_API_KEY}):
-            if 'wikipedia_proxy' in sys.modules:
-                del sys.modules['wikipedia_proxy']
-            import wikipedia_proxy
+            clear_proxy_modules()
+            import src.proxy as proxy_module
+            from src.proxy import app
 
-            # Setup app and client for testing
-            from flask import Flask
-            app = Flask(__name__)
-            app.config['TESTING'] = True
-
-            # Mock the anthropic client
-            wikipedia_proxy.ENABLE_LLM_REWRITE = True
-            wikipedia_proxy.anthropic_client = Mock()
+            # Mock the anthropic client in the proxy module
+            proxy_module.ENABLE_LLM_REWRITE = True
+            proxy_module.anthropic_client = Mock()
 
             # Mock Wikipedia response
             mock_response = Mock()
@@ -208,7 +207,7 @@ class TestIntegrationWithProxy:
             mock_response.headers = {'content-type': 'text/html'}
             mock_get.return_value = mock_response
 
-            with wikipedia_proxy.app.test_client() as client:
+            with app.test_client() as client:
                 response = client.get('/wiki/Test_Article')
 
                 assert response.status_code == 200
@@ -227,14 +226,13 @@ class TestRealAnthropicClient:
         """Test with real Anthropic API key"""
         api_key = os.getenv('ANTHROPIC_API_KEY')
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': api_key, 'ENABLE_LLM_REWRITE': 'true'}):
-            if 'wikipedia_proxy' in sys.modules:
-                del sys.modules['wikipedia_proxy']
-            import wikipedia_proxy
+            clear_proxy_modules()
+            import src.proxy as proxy
 
-            assert wikipedia_proxy.anthropic_client is not None
+            assert proxy.anthropic_client is not None
             assert isinstance(wikipedia_proxy.anthropic_client, Anthropic)
             # Verify client is configured with the API key
-            assert wikipedia_proxy.anthropic_client.api_key == api_key
+            assert proxy.anthropic_client.api_key == api_key
 
     @pytest.mark.skipif(
         not os.getenv('ANTHROPIC_API_KEY') or os.getenv('ANTHROPIC_API_KEY') == 'test-api-key-123',
