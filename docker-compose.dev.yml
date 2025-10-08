@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  wikipedia-proxy:
+    build: .
+    container_name: wikipedia_proxy_dev
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+    volumes:
+      # Mount source code for hot reloading
+      - ./wikipedia_proxy.py:/app/wikipedia_proxy.py:z
+      - ./requirements.txt:/app/requirements.txt:z
+    networks:
+      - proxy_network
+    command: python wikipedia_proxy.py
+
+networks:
+  proxy_network:
+    driver: bridge

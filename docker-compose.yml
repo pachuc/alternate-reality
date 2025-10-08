@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  wikipedia-proxy:
+    build: .
+    container_name: wikipedia_proxy
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - proxy_network
+    # For development, uncomment to mount code
+    # volumes:
+    #   - ./wikipedia_proxy.py:/app/wikipedia_proxy.py
+
+networks:
+  proxy_network:
+    driver: bridge
