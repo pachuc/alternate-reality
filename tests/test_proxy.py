@@ -6,7 +6,8 @@ Unit tests for the Wikipedia proxy server
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 import requests
-from src.proxy import app, rewrite_urls
+from src.proxy import app
+from src.html_processing import rewrite_urls
 
 
 @pytest.fixture

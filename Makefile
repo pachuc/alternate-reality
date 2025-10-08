@@ -8,14 +8,25 @@ build:
 build-test:
 	podman build -f docker/Dockerfile.dev -t wikipedia-proxy-test:latest .
 
-# Run the container
+# Run the container (automatically loads .env if it exists)
 run:
-	podman run -d --name wikipedia-proxy -p 8000:8000 \
-		-e ANTHROPIC_API_KEY="$${ANTHROPIC_API_KEY:-}" \
-		-e ENABLE_LLM_REWRITE="$${ENABLE_LLM_REWRITE:-false}" \
-		-e CLAUDE_MODEL="$${CLAUDE_MODEL:-claude-3-haiku-20240307}" \
-		-e MAX_REWRITE_TOKENS="$${MAX_REWRITE_TOKENS:-1000}" \
-		wikipedia-proxy:latest
+	@if [ -f .env ]; then \
+		echo "Loading environment from .env file..."; \
+		set -a; source .env; set +a; \
+		podman run -d --name wikipedia-proxy -p 8000:8000 \
+			-e ANTHROPIC_API_KEY="$${ANTHROPIC_API_KEY:-}" \
+			-e ENABLE_LLM_REWRITE="$${ENABLE_LLM_REWRITE:-false}" \
+			-e CLAUDE_MODEL="$${CLAUDE_MODEL:-claude-3-haiku-20240307}" \
+			-e MAX_REWRITE_TOKENS="$${MAX_REWRITE_TOKENS:-1000}" \
+			wikipedia-proxy:latest; \
+	else \
+		podman run -d --name wikipedia-proxy -p 8000:8000 \
+			-e ANTHROPIC_API_KEY="$${ANTHROPIC_API_KEY:-}" \
+			-e ENABLE_LLM_REWRITE="$${ENABLE_LLM_REWRITE:-false}" \
+			-e CLAUDE_MODEL="$${CLAUDE_MODEL:-claude-3-haiku-20240307}" \
+			-e MAX_REWRITE_TOKENS="$${MAX_REWRITE_TOKENS:-1000}" \
+			wikipedia-proxy:latest; \
+	fi
 
 # Run with docker-compose (using podman-compose)
 compose-up:
@@ -25,17 +36,31 @@ compose-up:
 compose-down:
 	podman-compose -f docker/docker-compose.yml down
 
-# Development mode - mounts local code
+# Development mode - mounts local code (automatically loads .env if it exists)
 dev:
-	podman run -it --rm \
-		-p 8000:8000 \
-		-v ./src:/app/src:z \
-		-e ANTHROPIC_API_KEY="$${ANTHROPIC_API_KEY:-}" \
-		-e ENABLE_LLM_REWRITE="$${ENABLE_LLM_REWRITE:-false}" \
-		-e CLAUDE_MODEL="$${CLAUDE_MODEL:-claude-3-haiku-20240307}" \
-		-e MAX_REWRITE_TOKENS="$${MAX_REWRITE_TOKENS:-1000}" \
-		--name wikipedia-proxy-dev \
-		wikipedia-proxy:latest
+	@if [ -f .env ]; then \
+		echo "Loading environment from .env file..."; \
+		set -a; source .env; set +a; \
+		podman run -it --rm \
+			-p 8000:8000 \
+			-v ./src:/app/src:z \
+			-e ANTHROPIC_API_KEY="$${ANTHROPIC_API_KEY:-}" \
+			-e ENABLE_LLM_REWRITE="$${ENABLE_LLM_REWRITE:-false}" \
+			-e CLAUDE_MODEL="$${CLAUDE_MODEL:-claude-3-haiku-20240307}" \
+			-e MAX_REWRITE_TOKENS="$${MAX_REWRITE_TOKENS:-1000}" \
+			--name wikipedia-proxy-dev \
+			wikipedia-proxy:latest; \
+	else \
+		podman run -it --rm \
+			-p 8000:8000 \
+			-v ./src:/app/src:z \
+			-e ANTHROPIC_API_KEY="$${ANTHROPIC_API_KEY:-}" \
+			-e ENABLE_LLM_REWRITE="$${ENABLE_LLM_REWRITE:-false}" \
+			-e CLAUDE_MODEL="$${CLAUDE_MODEL:-claude-3-haiku-20240307}" \
+			-e MAX_REWRITE_TOKENS="$${MAX_REWRITE_TOKENS:-1000}" \
+			--name wikipedia-proxy-dev \
+			wikipedia-proxy:latest; \
+	fi
 
 # Stop the container
 stop:
@@ -81,7 +106,7 @@ test-cov: build-test
 		-v ./config:/app/config:z \
 		-v ./htmlcov:/app/htmlcov:z \
 		wikipedia-proxy-test:latest \
-		pytest --cov=src.proxy --cov-report=term-missing --cov-report=html
+		pytest --cov=src --cov-report=term-missing --cov-report=html
 
 # Run tests in verbose mode in container
 test-verbose: build-test
