@@ -10,7 +10,12 @@ build-test:
 
 # Run the container
 run:
-	podman run -d --name wikipedia-proxy -p 8000:8000 wikipedia-proxy:latest
+	podman run -d --name wikipedia-proxy -p 8000:8000 \
+		-e ANTHROPIC_API_KEY="$${ANTHROPIC_API_KEY:-}" \
+		-e ENABLE_LLM_REWRITE="$${ENABLE_LLM_REWRITE:-false}" \
+		-e CLAUDE_MODEL="$${CLAUDE_MODEL:-claude-3-haiku-20240307}" \
+		-e MAX_REWRITE_TOKENS="$${MAX_REWRITE_TOKENS:-1000}" \
+		wikipedia-proxy:latest
 
 # Run with docker-compose (using podman-compose)
 compose-up:
@@ -25,6 +30,10 @@ dev:
 	podman run -it --rm \
 		-p 8000:8000 \
 		-v ./wikipedia_proxy.py:/app/wikipedia_proxy.py:z \
+		-e ANTHROPIC_API_KEY="$${ANTHROPIC_API_KEY:-}" \
+		-e ENABLE_LLM_REWRITE="$${ENABLE_LLM_REWRITE:-false}" \
+		-e CLAUDE_MODEL="$${CLAUDE_MODEL:-claude-3-haiku-20240307}" \
+		-e MAX_REWRITE_TOKENS="$${MAX_REWRITE_TOKENS:-1000}" \
 		--name wikipedia-proxy-dev \
 		wikipedia-proxy:latest
 

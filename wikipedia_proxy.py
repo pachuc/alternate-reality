@@ -1,17 +1,39 @@
 #!/usr/bin/env python3
 """
-Simple Wikipedia proxy server
+Simple Wikipedia proxy server with LLM rewriting capability
 """
 
 from flask import Flask, Response, request, redirect
 import requests
 from urllib.parse import urljoin, urlparse
 import re
+import os
+from anthropic import Anthropic
 
 app = Flask(__name__)
 
 # Wikipedia base URL - use en.wikipedia.org directly
 WIKIPEDIA_BASE = "https://en.wikipedia.org"
+
+# LLM Configuration
+ENABLE_LLM_REWRITE = os.getenv('ENABLE_LLM_REWRITE', 'false').lower() == 'true'
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
+CLAUDE_MODEL = os.getenv('CLAUDE_MODEL', 'claude-3-haiku-20240307')
+MAX_REWRITE_TOKENS = int(os.getenv('MAX_REWRITE_TOKENS', '1000'))
+
+# Initialize Anthropic client if API key is provided
+anthropic_client = None
+if ANTHROPIC_API_KEY and ENABLE_LLM_REWRITE:
+    try:
+        anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        print(f"LLM rewriting enabled with model: {CLAUDE_MODEL}")
+    except Exception as e:
+        print(f"Failed to initialize Anthropic client: {e}")
+        ENABLE_LLM_REWRITE = False
+else:
+    if ENABLE_LLM_REWRITE and not ANTHROPIC_API_KEY:
+        print("Warning: LLM rewriting enabled but no API key provided. Disabling feature.")
+        ENABLE_LLM_REWRITE = False
 
 def rewrite_urls(content, content_type):
     """
@@ -48,6 +70,55 @@ def rewrite_urls(content, content_type):
         return html.encode('utf-8')
     except Exception as e:
         print(f"Error rewriting content: {e}")
+        return content
+
+def rewrite_content_with_llm(content, content_type, path):
+    """
+    Rewrite HTML content using Claude LLM
+
+    Args:
+        content: The HTML content to rewrite
+        content_type: The content type of the response
+        path: The Wikipedia path being accessed
+
+    Returns:
+        The rewritten content (or original if rewriting is disabled/fails)
+    """
+    # Only process HTML content
+    if not content_type or 'text/html' not in content_type:
+        return content
+
+    # Check if LLM rewriting is enabled
+    if not ENABLE_LLM_REWRITE or not anthropic_client:
+        return content
+
+    try:
+        html = content.decode('utf-8')
+
+        # TODO: Implement actual LLM rewriting here
+        # For now, this is just a placeholder that:
+        # 1. Extracts the main content from the HTML
+        # 2. Sends it to Claude for rewriting
+        # 3. Replaces the original content with the rewritten version
+
+        # Placeholder: Add a notice that content would be rewritten
+        if '<body' in html:
+            notice = '''
+            <div style="background-color: #ffe6e6; border: 2px solid #ff0000; padding: 10px; margin: 10px; border-radius: 5px;">
+                <strong>🤖 LLM Rewriting Enabled (Placeholder)</strong><br>
+                This content would be rewritten by Claude AI.<br>
+                Path: {}
+            </div>
+            '''.format(path)
+
+            # Insert notice after body tag
+            html = re.sub(r'(<body[^>]*>)', r'\1' + notice, html, count=1)
+            print(f"[LLM Placeholder] Would rewrite content for: {path}")
+
+        return html.encode('utf-8')
+
+    except Exception as e:
+        print(f"Error in LLM rewriting: {e}")
         return content
 
 @app.route('/', defaults={'path': ''})
@@ -89,6 +160,9 @@ def proxy(path):
 
         # Rewrite URLs in HTML content
         content = rewrite_urls(resp.content, content_type)
+
+        # Apply LLM rewriting if enabled (currently placeholder)
+        content = rewrite_content_with_llm(content, content_type, path)
 
         # Create response
         response = Response(

@@ -1,12 +1,13 @@
 # Wikipedia Proxy Server
 
-A simple Python web server that acts as a proxy for Wikipedia, containerized with Podman.
+A simple Python web server that acts as a proxy for Wikipedia, containerized with Podman, with AI-powered content rewriting capability.
 
 📖 **For detailed documentation, architecture decisions, and best practices, see [CLAUDE.md](CLAUDE.md)**
 
 ## Features
 
 - Proxies all requests to wikipedia.org
+- AI-powered content rewriting using Claude (optional)
 - Containerized for easy deployment
 - Development and production configurations
 - Simple and lightweight
@@ -16,6 +17,50 @@ A simple Python web server that acts as a proxy for Wikipedia, containerized wit
 - Podman (or Docker)
 - podman-compose (optional, for compose files)
 - Make (optional, for using Makefile commands)
+
+## LLM Content Rewriting (Optional)
+
+The proxy server includes scaffolding for AI-powered content rewriting using Claude. This feature is disabled by default.
+
+### Configuration
+
+1. Copy the example environment file:
+```bash
+cp .env.example .env
+```
+
+2. Set your Anthropic API key:
+```bash
+# Edit .env and add your API key
+ANTHROPIC_API_KEY=your-actual-api-key-here
+```
+
+3. Enable LLM rewriting:
+```bash
+# In .env, set:
+ENABLE_LLM_REWRITE=true
+```
+
+### Environment Variables
+
+- `ANTHROPIC_API_KEY`: Your Anthropic API key (required for LLM features)
+- `ENABLE_LLM_REWRITE`: Enable/disable LLM content rewriting (default: false)
+- `CLAUDE_MODEL`: Claude model to use (default: claude-3-haiku-20240307)
+- `MAX_REWRITE_TOKENS`: Maximum tokens for rewriting (default: 1000)
+
+### Running with LLM Features
+
+```bash
+# Using environment variables
+export ANTHROPIC_API_KEY=your-api-key
+export ENABLE_LLM_REWRITE=true
+make run
+
+# Or using .env file with podman-compose
+podman-compose up -d
+```
+
+**Note**: The LLM rewriting is currently a placeholder that adds a notice to pages. Full implementation coming soon!
 
 ## Quick Start
 
