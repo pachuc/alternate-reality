@@ -246,3 +246,4 @@ This project demonstrates:
 - Providing comprehensive tooling for container management
 
 The setup is intentionally simple to serve as a learning tool and starting point for more complex proxy server implementations.
+- always run things inside podman! including tests!

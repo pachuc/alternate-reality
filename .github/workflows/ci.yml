@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements-dev.txt
+
+    - name: Run tests
+      run: |
+        pytest -v --cov=wikipedia_proxy --cov-report=term-missing
+
+    - name: Run linting
+      run: |
+        flake8 wikipedia_proxy.py test_wikipedia_proxy.py --max-line-length=100 --ignore=E501
+
+  container:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Build container
+      run: |
+        podman build -t wikipedia-proxy:test .
+
+    - name: Build test container
+      run: |
+        podman build -f Dockerfile.dev -t wikipedia-proxy-test:latest .
+
+    - name: Run tests in container
+      run: |
+        podman run --rm wikipedia-proxy-test:latest pytest -v

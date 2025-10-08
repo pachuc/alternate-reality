@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install development dependencies
+COPY requirements-dev.txt requirements.txt ./
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+# Copy application and tests
+COPY wikipedia_proxy.py test_wikipedia_proxy.py pytest.ini .coveragerc ./
+
+# Expose port
+EXPOSE 8000
+
+# Default to running tests, but can be overridden
+CMD ["pytest"]
