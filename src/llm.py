@@ -61,13 +61,11 @@ def calculate_max_tokens(input_text: str) -> int:
     """
     Calculate smart max_tokens based on input size.
     Uses heuristic: ~4 chars per token, then add 50% buffer for rewriting.
-    Caps at 8000 to be reasonable.
     """
     estimated_input_tokens = len(input_text) // 4
     # Add 50% buffer for expansion during rewriting
     estimated_output_tokens = int(estimated_input_tokens * 1.5)
-    # Cap at 8000 tokens (reasonable for section rewrites)
-    return min(max(estimated_output_tokens, 1000), 8000)
+    return estimated_output_tokens
 
 async def rewrite_content(html_content: str) -> str:
     """
@@ -82,18 +80,14 @@ async def rewrite_content(html_content: str) -> str:
     rewrite_prompt = PROMPT_TEMPLATE.format(HTML_CONTENT=html_content)
     client = get_async_client()
 
-    # Calculate smart max_tokens based on input size
     max_tokens = calculate_max_tokens(html_content)
 
-    print(f"Rewriting (max_tokens={max_tokens})...")
-
-    # Use async streaming with prompt caching
     result_text = ""
     async with client.messages.stream(
         model=CLAUDE_MODEL,
         max_tokens=max_tokens,
         temperature=1,
-        system=SYSTEM_PROMPT,  # Cached system prompt
+        system=SYSTEM_PROMPT,
         messages=[
             {
                 "role": "user",
@@ -104,5 +98,4 @@ async def rewrite_content(html_content: str) -> str:
         async for text in stream.text_stream:
             result_text += text
 
-    print("Rewrite done.")
     return result_text

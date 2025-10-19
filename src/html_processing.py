@@ -6,6 +6,8 @@ from typing import Optional
 from src import llm
 
 
+WEBSITE_DOMAIN= os.getenv("WEBSITE_DOMAIN", "localhost:8000")
+
 def rewrite_urls(content: bytes, content_type: Optional[str]) -> bytes:
     """
     Rewrite URLs in HTML content to go through the proxy.
@@ -17,42 +19,53 @@ def rewrite_urls(content: bytes, content_type: Optional[str]) -> bytes:
     Returns:
         Content with rewritten URLs
     """
+
+    base_domain = f"http://{WEBSITE_DOMAIN}"
+    protocol_domain = f"//{WEBSITE_DOMAIN}"
+    wikimedia_domain = f"http://{WEBSITE_DOMAIN}/wikimedia"
+
     if not content_type or 'text/html' not in content_type:
         return content
 
-    try:
-        html = content.decode('utf-8')
+    html = content.decode('utf-8')
 
-        # Replace Wikipedia domain URLs with proxy URLs
-        html = re.sub(
-            r'https?://([a-z]+\.)?wikipedia\.org',
-            'http://localhost:8000',
-            html
-        )
+    # Replace Wikipedia domain URLs with proxy URLs
+    html = re.sub(
+        r'https?://([a-z]+\.)?wikipedia\.org',
+        base_domain,
+        html
+    )
 
-        # Handle protocol-relative URLs
-        html = re.sub(
-            r'//([a-z]+\.)?wikipedia\.org',
-            '//localhost:8000',
-            html
-        )
+    # Handle protocol-relative URLs
+    html = re.sub(
+        r'//([a-z]+\.)?wikipedia\.org',
+        protocol_domain,
+        html
+    )
 
-        # Replace Wikimedia URLs
-        html = re.sub(
-            r'https?://upload\.wikimedia\.org',
-            'http://localhost:8000/wikimedia',
-            html
-        )
+    # Replace Wikimedia URLs
+    html = re.sub(
+        r'https?://upload\.wikimedia\.org',
+        wikimedia_domain,
+        html
+    )
 
-        return html.encode('utf-8')
-    except Exception as e:
-        print(f"Error rewriting URLs: {e}")
-        return content
+    return html.encode('utf-8')
 
 
 async def update_content(html_blob):
     """Async wrapper for LLM rewrite_content"""
     return await llm.rewrite_content(html_blob)
+
+
+async def process_section(section):
+    """Process a single section with error handling"""
+    updated_html = await update_content(section['html'])
+    return {
+        'index': section['index'],
+        'updated_html': updated_html,
+        'success': True
+    }
 
 
 async def process_and_replace_sections_inline(html):
@@ -120,36 +133,9 @@ async def process_and_replace_sections_inline(html):
             'elements_to_remove': section_elements
         })
 
-    print(f"[ASYNC] Extracted {len(sections)} sections (1 intro + {len(heading_divs)} h2 sections)")
-
     # ==================== PHASE 2: PROCESS ALL SECTIONS IN PARALLEL WITH ASYNC ====================
-    async def process_section(section):
-        """Process a single section with error handling"""
-        try:
-            print(f"[ASYNC] Processing section {section['index']} ({section['type']})")
-            updated_html = await update_content(section['html'])
-            print(f"[ASYNC] Completed section {section['index']}")
-            return {
-                'index': section['index'],
-                'updated_html': updated_html,
-                'success': True
-            }
-        except Exception as e:
-            print(f"[ASYNC] Error processing section {section['index']}: {e}")
-            # Return original HTML on error (graceful degradation)
-            return {
-                'index': section['index'],
-                'updated_html': section['html'],
-                'success': False,
-                'error': str(e)
-            }
-
     # Use asyncio.gather to process all sections concurrently
     results = await asyncio.gather(*[process_section(section) for section in sections])
-
-    # Results are already in order from asyncio.gather
-    successful = sum(1 for r in results if r['success'])
-    print(f"[ASYNC] Processed {len(results)} sections ({successful} successful, {len(results) - successful} errors)")
 
     # ==================== PHASE 3: RECONSTRUCT HTML ====================
     for section, result in zip(sections, results):
@@ -191,7 +177,6 @@ async def process_and_replace_sections_inline(html):
                 if hasattr(elem, 'decompose'):
                     elem.decompose()
 
-    print("[ASYNC] Reconstruction complete")
     return str(soup)
 
 
@@ -215,10 +200,7 @@ def process_html(content: bytes, content_type: Optional[str], path: str) -> byte
     if not (path.startswith('/wiki/') or path.startswith('wiki/')) or ':' in path:  # Skip special pages like Special:, File:, etc.
         return content
 
-    # Decode bytes to string for HTML processing
     html_string = content.decode('utf-8')
-
-    # Run the async processing function
     processed_html = asyncio.run(process_and_replace_sections_inline(html_string))
 
     return processed_html.encode("utf-8")
