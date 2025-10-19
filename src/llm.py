@@ -10,6 +10,7 @@ from anthropic import AsyncAnthropic
 # Configuration
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+MAX_MODEL_TOKENS = 64000
 
 # Singleton async client - reused across all requests
 _async_client = None
@@ -64,7 +65,7 @@ def calculate_max_tokens(input_text: str) -> int:
     """
     estimated_input_tokens = len(input_text) // 4
     # Add 50% buffer for expansion during rewriting
-    estimated_output_tokens = int(estimated_input_tokens * 1.5)
+    estimated_output_tokens = min(int(estimated_input_tokens * 1.5), MAX_MODEL_TOKENS)
     return estimated_output_tokens
 
 async def rewrite_content(html_content: str) -> str:
