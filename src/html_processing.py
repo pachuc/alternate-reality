@@ -1,4 +1,6 @@
 import re
+import os
+import asyncio
 from bs4 import BeautifulSoup, NavigableString
 from typing import Optional
 from src import llm
@@ -48,18 +50,18 @@ def rewrite_urls(content: bytes, content_type: Optional[str]) -> bytes:
         return content
 
 
-def update_content(html_blob):
-    return llm.rewrite_content(html_blob)
+async def update_content(html_blob):
+    """Async wrapper for LLM rewrite_content"""
+    return await llm.rewrite_content(html_blob)
 
 
-def process_and_replace_sections_inline(html):
+async def process_and_replace_sections_inline(html):
     """
-    Extract sections, process them with stub_function, and replace inline.
-    All in one pass.
+    Extract sections, process them in parallel with async LLM, and replace inline.
+    Uses three-phase approach: extract, async parallel process, reconstruct.
 
     Args:
         html: Original HTML string
-        stub_function: Function that takes HTML string and returns modified HTML string
 
     Returns:
         Modified HTML string
@@ -76,7 +78,10 @@ def process_and_replace_sections_inline(html):
     if not content_div:
         raise Exception("Main content div (mw-parser-output) not found inside mw-content-text!")
 
-    # 1. Process introduction
+    # ==================== PHASE 1: EXTRACT ALL SECTIONS ====================
+    sections = []
+
+    # 1. Extract introduction
     intro_elements = []
     first_heading_div = None
     for child in content_div.children:
@@ -86,79 +91,111 @@ def process_and_replace_sections_inline(html):
             break
         intro_elements.append(child)
 
-    print("processed intro content")
-
-    # Get intro HTML, process it, and replace
     intro_html = ''.join(str(elem) for elem in intro_elements)
-    updated_intro_html = update_content(intro_html)
-    print("updated intro content")
-    new_intro = BeautifulSoup(updated_intro_html, 'html.parser')
+    sections.append({
+        'index': 0,
+        'type': 'intro',
+        'html': intro_html,
+        'insert_before': first_heading_div,
+        'elements_to_remove': intro_elements
+    })
 
-    # Insert new intro before first heading div (or at beginning)
-    children_list = list(new_intro.children)
-    if children_list:
-        # Insert first child
-        if first_heading_div:
-            first_heading_div.insert_before(children_list[0])
-        else:
-            content_div.insert(0, children_list[0])
-
-        # Insert remaining children using moving insertion point (same as H2 sections)
-        insert_after = children_list[0]
-        for new_elem in children_list[1:]:
-            insert_after.insert_after(new_elem)
-            insert_after = new_elem
-
-    print("inserted new intro content")
-
-    # Remove old intro elements
-    for elem in intro_elements:
-        if hasattr(elem, 'decompose'):
-            elem.decompose()
-
-    print("removed old intro content")
-
-    # 2. Process each h2 section - find heading divs instead of h2 directly
+    # 2. Extract all h2 sections
     heading_divs = content_div.find_all('div', class_='mw-heading')
-    print(f"processing {len(heading_divs)} heading divs")
-
-    for heading_div in heading_divs:
-        print("processing heading section")
+    for idx, heading_div in enumerate(heading_divs, start=1):
         section_elements = []
-        next_heading_div = None
 
         # Collect elements until next heading div
         for sibling in heading_div.find_next_siblings():
             if sibling.name == 'div' and sibling.get('class') and 'mw-heading' in sibling.get('class'):
-                next_heading_div = sibling
                 break
             section_elements.append(sibling)
 
-        # Get section HTML, process it, and replace
         section_html = ''.join(str(elem) for elem in section_elements)
-        updated_section_html = update_content(section_html)
-        print("updated section content")
-        new_content = BeautifulSoup(updated_section_html, 'html.parser')
+        sections.append({
+            'index': idx,
+            'type': 'section',
+            'html': section_html,
+            'insert_after': heading_div,
+            'elements_to_remove': section_elements
+        })
 
-        # Insert new content after heading div
-        insert_after = heading_div
-        for new_elem in list(new_content.children):
-            insert_after.insert_after(new_elem)
-            insert_after = new_elem  # Move insertion point forward
-        print("inserted new section content")
+    print(f"[ASYNC] Extracted {len(sections)} sections (1 intro + {len(heading_divs)} h2 sections)")
 
-        # Remove old section elements
-        for elem in section_elements:
-            if hasattr(elem, 'decompose'):
-                elem.decompose()
-        print("removed old section content")
-    
-    print("returning data")
+    # ==================== PHASE 2: PROCESS ALL SECTIONS IN PARALLEL WITH ASYNC ====================
+    async def process_section(section):
+        """Process a single section with error handling"""
+        try:
+            print(f"[ASYNC] Processing section {section['index']} ({section['type']})")
+            updated_html = await update_content(section['html'])
+            print(f"[ASYNC] Completed section {section['index']}")
+            return {
+                'index': section['index'],
+                'updated_html': updated_html,
+                'success': True
+            }
+        except Exception as e:
+            print(f"[ASYNC] Error processing section {section['index']}: {e}")
+            # Return original HTML on error (graceful degradation)
+            return {
+                'index': section['index'],
+                'updated_html': section['html'],
+                'success': False,
+                'error': str(e)
+            }
+
+    # Use asyncio.gather to process all sections concurrently
+    results = await asyncio.gather(*[process_section(section) for section in sections])
+
+    # Results are already in order from asyncio.gather
+    successful = sum(1 for r in results if r['success'])
+    print(f"[ASYNC] Processed {len(results)} sections ({successful} successful, {len(results) - successful} errors)")
+
+    # ==================== PHASE 3: RECONSTRUCT HTML ====================
+    for section, result in zip(sections, results):
+        if section['type'] == 'intro':
+            # Process introduction
+            new_intro = BeautifulSoup(result['updated_html'], 'html.parser')
+            children_list = list(new_intro.children)
+
+            if children_list:
+                # Insert first child
+                if section['insert_before']:
+                    section['insert_before'].insert_before(children_list[0])
+                else:
+                    content_div.insert(0, children_list[0])
+
+                # Insert remaining children
+                insert_after = children_list[0]
+                for new_elem in children_list[1:]:
+                    insert_after.insert_after(new_elem)
+                    insert_after = new_elem
+
+            # Remove old intro elements
+            for elem in section['elements_to_remove']:
+                if hasattr(elem, 'decompose'):
+                    elem.decompose()
+
+        else:  # section
+            # Process h2 section
+            new_content = BeautifulSoup(result['updated_html'], 'html.parser')
+
+            # Insert new content after heading div
+            insert_after = section['insert_after']
+            for new_elem in list(new_content.children):
+                insert_after.insert_after(new_elem)
+                insert_after = new_elem
+
+            # Remove old section elements
+            for elem in section['elements_to_remove']:
+                if hasattr(elem, 'decompose'):
+                    elem.decompose()
+
+    print("[ASYNC] Reconstruction complete")
     return str(soup)
 
 
 def process_html(content: bytes, content_type: Optional[str], path: str) -> bytes:
-
     """
     Main function to process HTML content through the rewriting pipeline.
 
@@ -174,10 +211,14 @@ def process_html(content: bytes, content_type: Optional[str], path: str) -> byte
 
     if not content_type or 'text/html' not in content_type:
         return content
-    
+
     if not (path.startswith('/wiki/') or path.startswith('wiki/')) or ':' in path:  # Skip special pages like Special:, File:, etc.
         return content
 
-    
-    content = process_and_replace_sections_inline(content)
-    return content.encode("utf-8")
+    # Decode bytes to string for HTML processing
+    html_string = content.decode('utf-8')
+
+    # Run the async processing function
+    processed_html = asyncio.run(process_and_replace_sections_inline(html_string))
+
+    return processed_html.encode("utf-8")

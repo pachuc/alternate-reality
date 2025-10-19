@@ -5,15 +5,27 @@ LLM integration module for content rewriting using Claude
 
 import os
 from typing import Optional
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
 # Configuration
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"
-MAX_TOKENS = 60000
 
-SYSTEM_PROMPT = """
-Your job is to re-write wikipedia articles for a Gen Z audience. You should rewrite the article
+# Singleton async client - reused across all requests
+_async_client = None
+
+def get_async_client() -> AsyncAnthropic:
+    """Get or create the singleton async Anthropic client"""
+    global _async_client
+    if _async_client is None:
+        _async_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    return _async_client
+
+# System prompt with cache control for prompt caching
+SYSTEM_PROMPT = [
+    {
+        "type": "text",
+        "text": """Your job is to re-write wikipedia articles for a Gen Z audience. You should rewrite the article
 using colloquial Gen Z slang and simpler modern language.
 
 Common Gen Z slang terms:
@@ -36,27 +48,52 @@ You will be given a snippet of HTML wikipedia content and you should rewrite it 
 <IMPORTANT>
 You must preserve all the links and HTML elements of the content. Only the words should be changed.
 You must only reply with the updated HTML content and nothing else.
-</IMPORTANT>
-"""
+</IMPORTANT>""",
+        "cache_control": {"type": "ephemeral"}
+    }
+]
 
-PROMPT = """
-Re-write this HTML content for Gen Z:
+PROMPT_TEMPLATE = """Re-write this HTML content for Gen Z:
 
-{HTML_CONTENT}
-"""
+{HTML_CONTENT}"""
 
-def rewrite_content(html_content):
-    rewrite_prompt = PROMPT.format(HTML_CONTENT=html_content)
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
-    print("Rewiriting...")
+def calculate_max_tokens(input_text: str) -> int:
+    """
+    Calculate smart max_tokens based on input size.
+    Uses heuristic: ~4 chars per token, then add 50% buffer for rewriting.
+    Caps at 8000 to be reasonable.
+    """
+    estimated_input_tokens = len(input_text) // 4
+    # Add 50% buffer for expansion during rewriting
+    estimated_output_tokens = int(estimated_input_tokens * 1.5)
+    # Cap at 8000 tokens (reasonable for section rewrites)
+    return min(max(estimated_output_tokens, 1000), 8000)
 
-    # Use streaming for extended thinking requests
+async def rewrite_content(html_content: str) -> str:
+    """
+    Asynchronously rewrite HTML content using Claude with prompt caching.
+
+    Args:
+        html_content: The HTML content to rewrite
+
+    Returns:
+        Rewritten HTML content
+    """
+    rewrite_prompt = PROMPT_TEMPLATE.format(HTML_CONTENT=html_content)
+    client = get_async_client()
+
+    # Calculate smart max_tokens based on input size
+    max_tokens = calculate_max_tokens(html_content)
+
+    print(f"Rewriting (max_tokens={max_tokens})...")
+
+    # Use async streaming with prompt caching
     result_text = ""
-    with client.messages.stream(
+    async with client.messages.stream(
         model=CLAUDE_MODEL,
-        max_tokens=MAX_TOKENS,
+        max_tokens=max_tokens,
         temperature=1,
-        system=SYSTEM_PROMPT,
+        system=SYSTEM_PROMPT,  # Cached system prompt
         messages=[
             {
                 "role": "user",
@@ -64,7 +101,7 @@ def rewrite_content(html_content):
             }
         ]
     ) as stream:
-        for text in stream.text_stream:
+        async for text in stream.text_stream:
             result_text += text
 
     print("Rewrite done.")
