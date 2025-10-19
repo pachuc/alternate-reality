@@ -1,4 +1,4 @@
-.PHONY: build run stop clean logs shell dev test test-cov test-verbose format lint test-proxy compose-up compose-down build-test
+.PHONY: build run stop clean logs shell dev test test-cov test-verbose format lint test-proxy compose-up compose-down build-test debug-parser
 
 # Build the container image
 build:
@@ -12,7 +12,7 @@ build-test:
 run:
 	@if [ -f .env ]; then \
 		echo "Loading environment from .env file..."; \
-		set -a; source .env; set +a; \
+		set -a; . $$(pwd)/.env; set +a; \
 		podman run -d --name wikipedia-proxy -p 8000:8000 \
 			-e ANTHROPIC_API_KEY="$${ANTHROPIC_API_KEY:-}" \
 			-e ENABLE_LLM_REWRITE="$${ENABLE_LLM_REWRITE:-false}" \
@@ -40,7 +40,7 @@ compose-down:
 dev:
 	@if [ -f .env ]; then \
 		echo "Loading environment from .env file..."; \
-		set -a; source .env; set +a; \
+		set -a; . $$(pwd)/.env; set +a; \
 		podman run -it --rm \
 			-p 8000:8000 \
 			-v ./src:/app/src:z \
@@ -151,3 +151,18 @@ test-shell: build-test
 		-v ./tests:/app/tests:z \
 		-v ./config:/app/config:z \
 		wikipedia-proxy-test:latest /bin/bash
+
+# Debug Wikipedia page parser - shows headers and raw HTML structure
+debug-parser: build-test
+	@echo "Running Wikipedia parser debugger..."
+	@if [ -n "$(URL)" ]; then \
+		podman run --rm \
+			-v ./debug_wiki_parser.py:/app/debug_wiki_parser.py:z \
+			wikipedia-proxy-test:latest \
+			python debug_wiki_parser.py "$(URL)"; \
+	else \
+		podman run --rm \
+			-v ./debug_wiki_parser.py:/app/debug_wiki_parser.py:z \
+			wikipedia-proxy-test:latest \
+			python debug_wiki_parser.py; \
+	fi

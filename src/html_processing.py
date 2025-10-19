@@ -1,12 +1,6 @@
-#!/usr/bin/env python3
-"""
-HTML processing module for content extraction, rewriting, and URL manipulation
-"""
-
 import re
-from typing import Optional, Tuple
 from bs4 import BeautifulSoup, NavigableString
-
+from typing import Optional
 from src import llm
 
 
@@ -54,144 +48,117 @@ def rewrite_urls(content: bytes, content_type: Optional[str]) -> bytes:
         return content
 
 
-def extract_article_content(html: str) -> Tuple[Optional[str], Optional[str]]:
+def update_content(html_blob):
+    return llm.rewrite_content(html_blob)
+
+
+def process_and_replace_sections_inline(html):
     """
-    Extract the main article content from Wikipedia HTML.
+    Extract sections, process them with stub_function, and replace inline.
+    All in one pass.
 
     Args:
-        html: The full HTML page
+        html: Original HTML string
+        stub_function: Function that takes HTML string and returns modified HTML string
 
     Returns:
-        Tuple of (article_content, article_title) or (None, None) if extraction fails
+        Modified HTML string
     """
-    try:
-        soup = BeautifulSoup(html, 'lxml')
+    soup = BeautifulSoup(html, 'lxml')
 
-        # Get the article title
-        title_element = soup.find('h1', {'class': 'firstHeading'})
-        title = title_element.get_text() if title_element else ""
+    # Find the correct mw-parser-output div (some pages have multiple)
+    # The real content is inside div#mw-content-text
+    mw_content_text = soup.find('div', id='mw-content-text')
+    if not mw_content_text:
+        raise Exception("mw-content-text div not found!")
 
-        # Find the main content div - there can be multiple mw-parser-output divs
-        # We want the one with actual article content (has paragraphs)
-        content_div = None
-        all_content_divs = soup.find_all('div', {'class': 'mw-parser-output'})
-        for div in all_content_divs:
-            # Check if this div has actual content (paragraphs or headers)
-            if div.find_all(['p', 'h2', 'h3']):
-                content_div = div
+    content_div = mw_content_text.find('div', class_='mw-parser-output')
+    if not content_div:
+        raise Exception("Main content div (mw-parser-output) not found inside mw-content-text!")
+
+    # 1. Process introduction
+    intro_elements = []
+    first_heading_div = None
+    for child in content_div.children:
+        # Wikipedia wraps h2 in <div class="mw-heading mw-heading2">
+        if child.name == 'div' and child.get('class') and 'mw-heading' in child.get('class'):
+            first_heading_div = child
+            break
+        intro_elements.append(child)
+
+    print("processed intro content")
+
+    # Get intro HTML, process it, and replace
+    intro_html = ''.join(str(elem) for elem in intro_elements)
+    updated_intro_html = update_content(intro_html)
+    print("updated intro content")
+    new_intro = BeautifulSoup(updated_intro_html, 'html.parser')
+
+    # Insert new intro before first heading div (or at beginning)
+    children_list = list(new_intro.children)
+    if children_list:
+        # Insert first child
+        if first_heading_div:
+            first_heading_div.insert_before(children_list[0])
+        else:
+            content_div.insert(0, children_list[0])
+
+        # Insert remaining children using moving insertion point (same as H2 sections)
+        insert_after = children_list[0]
+        for new_elem in children_list[1:]:
+            insert_after.insert_after(new_elem)
+            insert_after = new_elem
+
+    print("inserted new intro content")
+
+    # Remove old intro elements
+    for elem in intro_elements:
+        if hasattr(elem, 'decompose'):
+            elem.decompose()
+
+    print("removed old intro content")
+
+    # 2. Process each h2 section - find heading divs instead of h2 directly
+    heading_divs = content_div.find_all('div', class_='mw-heading')
+    print(f"processing {len(heading_divs)} heading divs")
+
+    for heading_div in heading_divs:
+        print("processing heading section")
+        section_elements = []
+        next_heading_div = None
+
+        # Collect elements until next heading div
+        for sibling in heading_div.find_next_siblings():
+            if sibling.name == 'div' and sibling.get('class') and 'mw-heading' in sibling.get('class'):
+                next_heading_div = sibling
                 break
+            section_elements.append(sibling)
 
-        if not content_div:
-            return None, None
+        # Get section HTML, process it, and replace
+        section_html = ''.join(str(elem) for elem in section_elements)
+        updated_section_html = update_content(section_html)
+        print("updated section content")
+        new_content = BeautifulSoup(updated_section_html, 'html.parser')
 
-        # Remove elements we don't want to send to the LLM
-        # Remove edit links
-        for edit_link in content_div.find_all('span', {'class': 'mw-editsection'}):
-            edit_link.decompose()
+        # Insert new content after heading div
+        insert_after = heading_div
+        for new_elem in list(new_content.children):
+            insert_after.insert_after(new_elem)
+            insert_after = new_elem  # Move insertion point forward
+        print("inserted new section content")
 
-        # Remove reference markers like [1], [2], etc.
-        for ref in content_div.find_all('sup', {'class': 'reference'}):
-            ref.decompose()
-
-        # Remove the references section if present
-        references_div = content_div.find('div', {'class': 'reflist'})
-        if references_div:
-            references_div.decompose()
-
-        # Remove navigation boxes
-        for navbox in content_div.find_all('div', {'class': 'navbox'}):
-            navbox.decompose()
-
-        # Extract just the text content for the LLM
-        # We'll get paragraphs, headers, and lists
-        text_parts = []
-
-        for element in content_div.find_all(['p', 'h2', 'h3', 'h4', 'ul', 'ol']):
-            if element.name in ['h2', 'h3', 'h4']:
-                text_parts.append(f"\n{element.get_text().strip()}\n")
-            else:
-                text = element.get_text().strip()
-                if text:  # Only add non-empty content
-                    text_parts.append(text)
-
-        article_content = '\n\n'.join(text_parts)
-        return article_content, title
-
-    except Exception as e:
-        print(f"Error extracting article content: {e}")
-        return None, None
-
-
-def reconstruct_html_with_new_content(html: str, new_content: str) -> str:
-    """
-    Replace the article content in the HTML with rewritten content.
-
-    Args:
-        html: The original HTML page
-        new_content: The rewritten article content from LLM
-
-    Returns:
-        Modified HTML with new content
-    """
-    try:
-        soup = BeautifulSoup(html, 'lxml')
-
-        # Add a banner indicating this is alternate reality content
-        banner_html = """
-        <div style="background-color: #fff3cd; border: 2px solid #856404; color: #856404;
-                    padding: 15px; margin: 10px 0; border-radius: 5px; text-align: center;">
-            <strong>⚠️ Alternate Reality Version</strong><br>
-            This article has been rewritten to reflect an alternate history where Germany won World War 2.
-            <br><small>Content generated by AI for educational/entertainment purposes only.</small>
-        </div>
-        """
-
-        # Find the main content div
-        content_div = soup.find('div', {'class': 'mw-parser-output'})
-        if not content_div:
-            return html
-
-        # Clear the existing content (but preserve the div and its attributes)
-        content_div.clear()
-
-        # Add the banner first
-        banner = BeautifulSoup(banner_html, 'html.parser')
-        content_div.append(banner)
-
-        # Split the new content into paragraphs and add them
-        paragraphs = new_content.split('\n\n')
-        for para_text in paragraphs:
-            para_text = para_text.strip()
-            if not para_text:
-                continue
-
-            # Check if it's a heading (simple heuristic)
-            if para_text.startswith('#'):
-                # Count the number of # to determine heading level
-                level = len(para_text) - len(para_text.lstrip('#'))
-                heading_text = para_text.lstrip('#').strip()
-                heading = soup.new_tag(f'h{min(level + 1, 6)}')  # h2-h6
-                heading.string = heading_text
-                content_div.append(heading)
-            elif para_text.startswith('='):
-                # Alternate heading style
-                heading = soup.new_tag('h2')
-                heading.string = para_text.strip('=').strip()
-                content_div.append(heading)
-            else:
-                # Regular paragraph
-                para = soup.new_tag('p')
-                para.string = para_text
-                content_div.append(para)
-
-        return str(soup)
-
-    except Exception as e:
-        print(f"Error reconstructing HTML: {e}")
-        return html
+        # Remove old section elements
+        for elem in section_elements:
+            if hasattr(elem, 'decompose'):
+                elem.decompose()
+        print("removed old section content")
+    
+    print("returning data")
+    return str(soup)
 
 
 def process_html(content: bytes, content_type: Optional[str], path: str) -> bytes:
+
     """
     Main function to process HTML content through the rewriting pipeline.
 
@@ -203,43 +170,14 @@ def process_html(content: bytes, content_type: Optional[str], path: str) -> byte
     Returns:
         Processed HTML content as bytes
     """
-    # First, rewrite URLs
     content = rewrite_urls(content, content_type)
 
-    # Only process HTML for LLM rewriting
     if not content_type or 'text/html' not in content_type:
         return content
-
-    # Check if LLM rewriting is enabled
-    if not llm.is_enabled():
-        return content
-
-    # Skip non-article pages - path might come with or without leading slash
+    
     if not (path.startswith('/wiki/') or path.startswith('wiki/')) or ':' in path:  # Skip special pages like Special:, File:, etc.
         return content
 
-    try:
-        html = content.decode('utf-8')
-
-        # Extract article content
-        article_content, title = extract_article_content(html)
-        if not article_content:
-            print(f"Could not extract article content from {path}")
-            return content
-
-        print(f"Rewriting article: {title or path}")
-
-        # Get rewritten content from LLM
-        new_content = llm.rewrite_content(article_content, title)
-        if not new_content:
-            print(f"LLM rewriting failed for {path}")
-            return content
-
-        # Reconstruct HTML with new content
-        modified_html = reconstruct_html_with_new_content(html, new_content)
-
-        return modified_html.encode('utf-8')
-
-    except Exception as e:
-        print(f"Error in HTML processing: {e}")
-        return content
+    
+    content = process_and_replace_sections_inline(content)
+    return content.encode("utf-8")
