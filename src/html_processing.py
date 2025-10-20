@@ -1,12 +1,25 @@
 import re
 import os
 import asyncio
+import time
 from bs4 import BeautifulSoup, NavigableString
 from typing import Optional
 from src import llm
 
 
-WEBSITE_DOMAIN= os.getenv("WEBSITE_DOMAIN", "localhost:8000")
+WEBSITE_DOMAIN = os.getenv("WEBSITE_DOMAIN", "localhost:8000")
+
+# Thresholds for section processing
+TINY_SECTION_THRESHOLD = 50  # Skip sections with < 50 chars
+SMALL_SECTION_THRESHOLD = 500  # Batch sections with < 500 chars
+
+# Section headings to skip (case-insensitive)
+SKIP_SECTIONS = {
+    'references', 'notes', 'bibliography', 'citations', 'footnotes',
+    'external links', 'see also', 'further reading',
+    'sources', 'works cited', 'general references',
+    'general bibliography', 'selected bibliography'
+}
 
 def rewrite_urls(content: bytes, content_type: Optional[str]) -> bytes:
     """
@@ -53,6 +66,78 @@ def rewrite_urls(content: bytes, content_type: Optional[str]) -> bytes:
     return html.encode('utf-8')
 
 
+def get_section_heading_text(heading_div) -> str:
+    """Extract text from a heading div"""
+    if not heading_div:
+        return ""
+    h_tag = heading_div.find(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+    if h_tag:
+        return h_tag.get_text(strip=True).lower()
+    return ""
+
+
+def should_skip_section(heading_text: str, html_content: str) -> bool:
+    """
+    Determine if a section should be skipped entirely.
+
+    Args:
+        heading_text: The heading text (lowercase)
+        html_content: The HTML content of the section
+
+    Returns:
+        True if section should be skipped, False otherwise
+    """
+    # Skip if heading matches skip list
+    if heading_text in SKIP_SECTIONS:
+        return True
+
+    # Skip if content is tiny (< 50 chars of actual text)
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html_content, 'html.parser')
+    text_content = soup.get_text(strip=True)
+    if len(text_content) < TINY_SECTION_THRESHOLD:
+        return True
+
+    return False
+
+
+def split_batch_result(combined_html: str, num_sections: int) -> list:
+    """
+    Split a batched LLM result back into individual sections.
+
+    Args:
+        combined_html: The combined HTML response from LLM
+        num_sections: Number of sections that were batched
+
+    Returns:
+        List of individual section HTML strings
+    """
+    sections = []
+    for i in range(num_sections):
+        separator = f"<!-- SECTION_BREAK_{i} -->"
+        if separator in combined_html:
+            if i == 0:
+                # First section: everything before first separator
+                parts = combined_html.split(separator, 1)
+                sections.append(parts[0])
+            else:
+                # Find content between previous and current separator
+                prev_separator = f"<!-- SECTION_BREAK_{i-1} -->"
+                if prev_separator in combined_html:
+                    start_idx = combined_html.find(prev_separator) + len(prev_separator)
+                    end_idx = combined_html.find(separator)
+                    sections.append(combined_html[start_idx:end_idx])
+        elif i == num_sections - 1:
+            # Last section: everything after last separator
+            last_separator = f"<!-- SECTION_BREAK_{i-1} -->"
+            if last_separator in combined_html:
+                parts = combined_html.split(last_separator, 1)
+                if len(parts) > 1:
+                    sections.append(parts[1])
+
+    return sections
+
+
 async def update_content(html_blob):
     """Async wrapper for LLM rewrite_content"""
     return await llm.rewrite_content(html_blob)
@@ -71,7 +156,7 @@ async def process_section(section):
 async def process_and_replace_sections_inline(html):
     """
     Extract sections, process them in parallel with async LLM, and replace inline.
-    Uses three-phase approach: extract, async parallel process, reconstruct.
+    Uses optimized approach: extract, filter/batch, async parallel process, reconstruct.
 
     Args:
         html: Original HTML string
@@ -81,8 +166,7 @@ async def process_and_replace_sections_inline(html):
     """
     soup = BeautifulSoup(html, 'lxml')
 
-    # Find the correct mw-parser-output div (some pages have multiple)
-    # The real content is inside div#mw-content-text
+    # Find the correct mw-parser-output div
     mw_content_text = soup.find('div', id='mw-content-text')
     if not mw_content_text:
         raise Exception("mw-content-text div not found!")
@@ -98,17 +182,20 @@ async def process_and_replace_sections_inline(html):
     intro_elements = []
     first_heading_div = None
     for child in content_div.children:
-        # Wikipedia wraps h2 in <div class="mw-heading mw-heading2">
         if child.name == 'div' and child.get('class') and 'mw-heading' in child.get('class'):
             first_heading_div = child
             break
         intro_elements.append(child)
 
     intro_html = ''.join(str(elem) for elem in intro_elements)
+    intro_text_len = len(BeautifulSoup(intro_html, 'html.parser').get_text(strip=True))
+
     sections.append({
         'index': 0,
         'type': 'intro',
         'html': intro_html,
+        'heading_text': '',
+        'text_length': intro_text_len,
         'insert_before': first_heading_div,
         'elements_to_remove': intro_elements
     })
@@ -125,54 +212,193 @@ async def process_and_replace_sections_inline(html):
             section_elements.append(sibling)
 
         section_html = ''.join(str(elem) for elem in section_elements)
+        heading_text = get_section_heading_text(heading_div)
+        text_len = len(BeautifulSoup(section_html, 'html.parser').get_text(strip=True))
+
         sections.append({
             'index': idx,
             'type': 'section',
             'html': section_html,
+            'heading_text': heading_text,
+            'text_length': text_len,
             'insert_after': heading_div,
             'elements_to_remove': section_elements
         })
 
-    # ==================== PHASE 2: PROCESS ALL SECTIONS IN PARALLEL WITH ASYNC ====================
-    # Use asyncio.gather to process all sections concurrently
-    results = await asyncio.gather(*[process_section(section) for section in sections])
+    # ==================== PHASE 1.5: FILTER AND BATCH SECTIONS ====================
+    process_tasks = []  # List of tasks to send to LLM
+    section_map = {}  # Map task index to original section indices
+
+    skip_count = 0
+    batch_count = 0
+    individual_count = 0
+
+    i = 0
+    while i < len(sections):
+        section = sections[i]
+
+        # Check if section should be skipped
+        if should_skip_section(section['heading_text'], section['html']):
+            # Mark as skipped - will use original HTML
+            section_map[len(process_tasks)] = [i]
+            process_tasks.append({
+                'type': 'skip',
+                'section_indices': [i],
+                'html': section['html']
+            })
+            skip_count += 1
+            i += 1
+            continue
+
+        # Check if section is small and can be batched
+        if section['text_length'] < SMALL_SECTION_THRESHOLD:
+            # Look ahead for consecutive small sections
+            batch_indices = [i]
+            batch_html_parts = [section['html']]
+            j = i + 1
+
+            while j < len(sections) and len(batch_indices) < 5:  # Max 5 sections per batch
+                next_section = sections[j]
+                if should_skip_section(next_section['heading_text'], next_section['html']):
+                    break
+                if next_section['text_length'] < SMALL_SECTION_THRESHOLD:
+                    batch_indices.append(j)
+                    batch_html_parts.append(f"<!-- SECTION_BREAK_{len(batch_html_parts)-1} -->{next_section['html']}")
+                    j += 1
+                else:
+                    break
+
+            if len(batch_indices) > 1:
+                # Create batch task
+                combined_html = ''.join(batch_html_parts)
+                section_map[len(process_tasks)] = batch_indices
+                process_tasks.append({
+                    'type': 'batch',
+                    'section_indices': batch_indices,
+                    'html': combined_html,
+                    'num_sections': len(batch_indices)
+                })
+                batch_count += len(batch_indices)
+                i = j
+            else:
+                # Process individually even though small
+                section_map[len(process_tasks)] = [i]
+                process_tasks.append({
+                    'type': 'individual',
+                    'section_indices': [i],
+                    'html': section['html']
+                })
+                individual_count += 1
+                i += 1
+        else:
+            # Large section - process individually
+            section_map[len(process_tasks)] = [i]
+            process_tasks.append({
+                'type': 'individual',
+                'section_indices': [i],
+                'html': section['html']
+            })
+            individual_count += 1
+            i += 1
+
+    print(f"[OPTIMIZED] Total sections: {len(sections)}, Skipped: {skip_count}, Batched: {batch_count}, Individual: {individual_count}, API calls: {len(process_tasks)}")
+
+    # ==================== PHASE 2: PROCESS TASKS IN PARALLEL ====================
+    async def process_task(task):
+        """Process a single task (skip, batch, or individual)"""
+        try:
+            if task['type'] == 'skip':
+                # Return original HTML
+                return {
+                    'success': True,
+                    'results': [task['html']],
+                    'section_indices': task['section_indices']
+                }
+            elif task['type'] == 'batch':
+                # Process batched sections
+                updated_html = await update_content(task['html'])
+                # Split back into individual sections
+                split_results = split_batch_result(updated_html, task['num_sections'])
+                if len(split_results) != task['num_sections']:
+                    # Split failed, return originals
+                    print(f"[WARN] Batch split failed, using originals")
+                    original_parts = task['html'].split('<!-- SECTION_BREAK_')
+                    results = [original_parts[0]]
+                    for part in original_parts[1:]:
+                        results.append(part.split('-->', 1)[1] if '-->' in part else part)
+                    return {
+                        'success': False,
+                        'results': results,
+                        'section_indices': task['section_indices']
+                    }
+                return {
+                    'success': True,
+                    'results': split_results,
+                    'section_indices': task['section_indices']
+                }
+            else:  # individual
+                # Process single section
+                updated_html = await update_content(task['html'])
+                return {
+                    'success': True,
+                    'results': [updated_html],
+                    'section_indices': task['section_indices']
+                }
+        except Exception as e:
+            print(f"[ERROR] Task processing failed: {e}")
+            # Return originals on error
+            return {
+                'success': False,
+                'results': [sections[idx]['html'] for idx in task['section_indices']],
+                'section_indices': task['section_indices']
+            }
+
+    # Process all tasks concurrently
+    llm_start_time = time.perf_counter()
+    task_results = await asyncio.gather(*[process_task(task) for task in process_tasks])
+    llm_end_time = time.perf_counter()
+    print(f"Total LLM time: {(llm_end_time - llm_start_time):.2f}s")
+
+    # Map results back to sections
+    section_results = [None] * len(sections)
+    for task_result in task_results:
+        for i, section_idx in enumerate(task_result['section_indices']):
+            if i < len(task_result['results']):
+                section_results[section_idx] = task_result['results'][i]
+            else:
+                section_results[section_idx] = sections[section_idx]['html']
 
     # ==================== PHASE 3: RECONSTRUCT HTML ====================
-    for section, result in zip(sections, results):
+    for section, updated_html in zip(sections, section_results):
+        if updated_html is None:
+            updated_html = section['html']
+
         if section['type'] == 'intro':
-            # Process introduction
-            new_intro = BeautifulSoup(result['updated_html'], 'html.parser')
+            new_intro = BeautifulSoup(updated_html, 'html.parser')
             children_list = list(new_intro.children)
 
             if children_list:
-                # Insert first child
                 if section['insert_before']:
                     section['insert_before'].insert_before(children_list[0])
                 else:
                     content_div.insert(0, children_list[0])
 
-                # Insert remaining children
                 insert_after = children_list[0]
                 for new_elem in children_list[1:]:
                     insert_after.insert_after(new_elem)
                     insert_after = new_elem
 
-            # Remove old intro elements
             for elem in section['elements_to_remove']:
                 if hasattr(elem, 'decompose'):
                     elem.decompose()
-
         else:  # section
-            # Process h2 section
-            new_content = BeautifulSoup(result['updated_html'], 'html.parser')
+            new_content = BeautifulSoup(updated_html, 'html.parser')
 
-            # Insert new content after heading div
             insert_after = section['insert_after']
             for new_elem in list(new_content.children):
                 insert_after.insert_after(new_elem)
                 insert_after = new_elem
 
-            # Remove old section elements
             for elem in section['elements_to_remove']:
                 if hasattr(elem, 'decompose'):
                     elem.decompose()
@@ -192,6 +418,8 @@ def process_html(content: bytes, content_type: Optional[str], path: str) -> byte
     Returns:
         Processed HTML content as bytes
     """
+    process_html_start_time = time.perf_counter()
+
     content = rewrite_urls(content, content_type)
 
     if not content_type or 'text/html' not in content_type:
@@ -202,5 +430,9 @@ def process_html(content: bytes, content_type: Optional[str], path: str) -> byte
 
     html_string = content.decode('utf-8')
     processed_html = asyncio.run(process_and_replace_sections_inline(html_string))
+
+    process_html_end_time = time.perf_counter()
+    total_time = process_html_end_time - process_html_start_time
+    print(f"Total time to process page: {total_time:.6f}")
 
     return processed_html.encode("utf-8")
