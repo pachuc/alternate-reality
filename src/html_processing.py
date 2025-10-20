@@ -11,7 +11,11 @@ WEBSITE_DOMAIN = os.getenv("WEBSITE_DOMAIN", "localhost:8000")
 
 # Thresholds for section processing
 TINY_SECTION_THRESHOLD = 50  # Skip sections with < 50 chars
-SMALL_SECTION_THRESHOLD = 500  # Batch sections with < 500 chars
+SMALL_SECTION_THRESHOLD = 2500  # Batch sections with < 2500 chars (configurable via env)
+
+# Allow threshold override via environment variable
+if os.environ.get('SMALL_SECTION_THRESHOLD'):
+    SMALL_SECTION_THRESHOLD = int(os.environ.get('SMALL_SECTION_THRESHOLD'))
 
 # Section headings to skip (case-insensitive)
 SKIP_SECTIONS = {
@@ -226,80 +230,130 @@ async def process_and_replace_sections_inline(html):
         })
 
     # ==================== PHASE 1.5: FILTER AND BATCH SECTIONS ====================
-    process_tasks = []  # List of tasks to send to LLM
-    section_map = {}  # Map task index to original section indices
+    # First pass: categorize all sections
+    skip_indices = []
+    small_indices = []
+    large_indices = []
 
-    skip_count = 0
+    for i, section in enumerate(sections):
+        if should_skip_section(section['heading_text'], section['html']):
+            skip_indices.append(i)
+        elif section['text_length'] < SMALL_SECTION_THRESHOLD:
+            small_indices.append(i)
+        else:
+            large_indices.append(i)
+
+    # Second pass: create batches from small sections
+    process_tasks = []
+    section_map = {}
+    skip_count = len(skip_indices)
     batch_count = 0
     individual_count = 0
 
-    i = 0
-    while i < len(sections):
-        section = sections[i]
+    MAX_BATCH_SIZE = 5  # Max sections per batch
+    MAX_BATCH_CHARS = 10000  # Max combined chars per batch
 
-        # Check if section should be skipped
-        if should_skip_section(section['heading_text'], section['html']):
-            # Mark as skipped - will use original HTML
-            section_map[len(process_tasks)] = [i]
-            process_tasks.append({
-                'type': 'skip',
-                'section_indices': [i],
-                'html': section['html']
-            })
-            skip_count += 1
-            i += 1
-            continue
+    # Add skip tasks
+    for idx in skip_indices:
+        section_map[len(process_tasks)] = [idx]
+        process_tasks.append({
+            'type': 'skip',
+            'section_indices': [idx],
+            'html': sections[idx]['html']
+        })
 
-        # Check if section is small and can be batched
-        if section['text_length'] < SMALL_SECTION_THRESHOLD:
-            # Look ahead for consecutive small sections
-            batch_indices = [i]
-            batch_html_parts = [section['html']]
-            j = i + 1
+    # Batch small sections together (up to limits)
+    current_batch = []
+    current_batch_size = 0
 
-            while j < len(sections) and len(batch_indices) < 5:  # Max 5 sections per batch
-                next_section = sections[j]
-                if should_skip_section(next_section['heading_text'], next_section['html']):
-                    break
-                if next_section['text_length'] < SMALL_SECTION_THRESHOLD:
-                    batch_indices.append(j)
-                    batch_html_parts.append(f"<!-- SECTION_BREAK_{len(batch_html_parts)-1} -->{next_section['html']}")
-                    j += 1
-                else:
-                    break
+    for idx in small_indices:
+        section = sections[idx]
 
-            if len(batch_indices) > 1:
+        # Check if adding this section would exceed limits
+        if (len(current_batch) >= MAX_BATCH_SIZE or
+            current_batch_size + section['text_length'] > MAX_BATCH_CHARS):
+            # Flush current batch
+            if len(current_batch) > 1:
                 # Create batch task
+                batch_html_parts = []
+                for i, batch_idx in enumerate(current_batch):
+                    if i == 0:
+                        batch_html_parts.append(sections[batch_idx]['html'])
+                    else:
+                        batch_html_parts.append(f"<!-- SECTION_BREAK_{i-1} -->{sections[batch_idx]['html']}")
+
                 combined_html = ''.join(batch_html_parts)
-                section_map[len(process_tasks)] = batch_indices
+                section_map[len(process_tasks)] = current_batch
                 process_tasks.append({
                     'type': 'batch',
-                    'section_indices': batch_indices,
+                    'section_indices': current_batch,
                     'html': combined_html,
-                    'num_sections': len(batch_indices)
+                    'num_sections': len(current_batch)
                 })
-                batch_count += len(batch_indices)
-                i = j
-            else:
-                # Process individually even though small
-                section_map[len(process_tasks)] = [i]
+                batch_count += len(current_batch)
+            elif len(current_batch) == 1:
+                # Single section, process individually
+                section_map[len(process_tasks)] = current_batch
                 process_tasks.append({
                     'type': 'individual',
-                    'section_indices': [i],
-                    'html': section['html']
+                    'section_indices': current_batch,
+                    'html': sections[current_batch[0]]['html']
                 })
                 individual_count += 1
-                i += 1
+
+            # Start new batch
+            current_batch = [idx]
+            current_batch_size = section['text_length']
         else:
-            # Large section - process individually
-            section_map[len(process_tasks)] = [i]
+            # Add to current batch
+            current_batch.append(idx)
+            current_batch_size += section['text_length']
+
+    # Flush final batch
+    if current_batch:
+        if len(current_batch) > 1:
+            batch_html_parts = []
+            for i, batch_idx in enumerate(current_batch):
+                if i == 0:
+                    batch_html_parts.append(sections[batch_idx]['html'])
+                else:
+                    batch_html_parts.append(f"<!-- SECTION_BREAK_{i-1} -->{sections[batch_idx]['html']}")
+
+            combined_html = ''.join(batch_html_parts)
+            section_map[len(process_tasks)] = current_batch
+            process_tasks.append({
+                'type': 'batch',
+                'section_indices': current_batch,
+                'html': combined_html,
+                'num_sections': len(current_batch)
+            })
+            batch_count += len(current_batch)
+        elif len(current_batch) == 1:
+            section_map[len(process_tasks)] = current_batch
             process_tasks.append({
                 'type': 'individual',
-                'section_indices': [i],
-                'html': section['html']
+                'section_indices': current_batch,
+                'html': sections[current_batch[0]]['html']
             })
             individual_count += 1
-            i += 1
+
+    # Add large sections as individual tasks
+    for idx in large_indices:
+        section_map[len(process_tasks)] = [idx]
+        process_tasks.append({
+            'type': 'individual',
+            'section_indices': [idx],
+            'html': sections[idx]['html']
+        })
+        individual_count += 1
+
+    # Debug: Show section size distribution
+    if os.environ.get('DEBUG_SECTIONS', 'false').lower() == 'true':
+        print("\n[DEBUG] Section size distribution:")
+        for idx, section in enumerate(sections):
+            status = "SKIP" if should_skip_section(section['heading_text'], section['html']) else "PROCESS"
+            print(f"  Section {idx} ({section['type']}): {section['text_length']} chars, heading='{section['heading_text'][:30]}...', status={status}")
+        print()
 
     print(f"[OPTIMIZED] Total sections: {len(sections)}, Skipped: {skip_count}, Batched: {batch_count}, Individual: {individual_count}, API calls: {len(process_tasks)}")
 
